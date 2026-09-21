@@ -2,7 +2,72 @@ import React, { useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView, TextInput, ActivityIndicator, Alert, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
 import * as DocumentPicker from 'expo-document-picker';
-import { parseStudySet, StudyCard, QuizQuestion } from '../../utils/quizletGenerator';
+
+// Internal Types
+interface StudyCard {
+  id: string;
+  term: string;
+  definition: string;
+}
+
+interface QuizQuestion {
+  id: string;
+  term: string;
+  correctAnswer: string;
+  options: string[];
+}
+
+// Internal Parser Utility
+const parseStudySet = (text: string) => {
+  const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+  const cards: StudyCard[] = [];
+
+  lines.forEach((line, idx) => {
+    const delimiterMatch = line.match(/[:=\-\t]/);
+    if (delimiterMatch && delimiterMatch.index) {
+      const term = line.substring(0, delimiterMatch.index).trim();
+      const definition = line.substring(delimiterMatch.index + 1).trim();
+      if (term && definition) {
+        cards.push({ id: `card_${Date.now()}_${idx}`, term, definition });
+      }
+    } else if (line.length > 10) {
+      cards.push({
+        id: `card_${Date.now()}_${idx}`,
+        term: `Concept ${idx + 1}`,
+        definition: line,
+      });
+    }
+  });
+
+  if (cards.length === 0) {
+    cards.push(
+      { id: '1', term: 'Operating System', definition: 'Software that manages computer hardware and software resources.' },
+      { id: '2', term: 'Memory Paging', definition: 'A memory management scheme that stores and retrieves data from secondary storage.' },
+      { id: '3', term: 'Virtual Memory', definition: 'A feature of an OS that allows a computer to compensate for physical memory shortages.' }
+    );
+  }
+
+  const questions: QuizQuestion[] = cards.map((card) => {
+    const wrongAnswers = cards
+      .filter(c => c.id !== card.id)
+      .map(c => c.definition);
+
+    while (wrongAnswers.length < 3) {
+      wrongAnswers.push(`Alternative definition ${wrongAnswers.length + 1}`);
+    }
+
+    const shuffledOptions = [card.definition, ...wrongAnswers.slice(0, 3)].sort(() => 0.5 - Math.random());
+
+    return {
+      id: `q_${card.id}`,
+      term: card.term,
+      correctAnswer: card.definition,
+      options: shuffledOptions,
+    };
+  });
+
+  return { cards, questions };
+};
 
 export default function QuizletStudioScreen() {
   const router = useRouter();
@@ -29,14 +94,13 @@ export default function QuizletStudioScreen() {
   const [selectedMatch, setSelectedMatch] = useState<string | null>(null);
   const [matchedIds, setMatchedIds] = useState<string[]>([]);
 
-  const handleGenerate = (rawText: string, name: string) => {
+  const handleGenerate = (rawText: string) => {
     setLoading(true);
     setTimeout(() => {
-      const data = parseStudySet(rawText, name);
+      const data = parseStudySet(rawText);
       setCards(data.cards);
       setQuestions(data.questions);
 
-      // Setup Match Game
       const terms = data.cards.slice(0, 4).map(c => ({ id: `t_${c.id}`, text: c.term, type: 'term' as const, matchId: c.id }));
       const defs = data.cards.slice(0, 4).map(c => ({ id: `d_${c.id}`, text: c.definition, type: 'def' as const, matchId: c.id }));
       setMatchItems([...terms, ...defs].sort(() => 0.5 - Math.random()));
@@ -58,7 +122,7 @@ export default function QuizletStudioScreen() {
       if (result.canceled || !result.assets?.[0]) return;
       const fileName = result.assets[0].name;
       const mockExtractedText = `${fileName}:\nMemory Paging - Divides memory into fixed-size blocks.\nVirtual Memory - Expands usable RAM onto storage.\nSemaphore - Controls access to shared resources.\nDeadlock - A state where process execution is stalled.`;
-      handleGenerate(mockExtractedText, fileName);
+      handleGenerate(mockExtractedText);
     } catch {
       if (Platform.OS === 'web') window.alert('Failed to pick document.');
       else Alert.alert('Error', 'Failed to pick document.');
@@ -104,7 +168,6 @@ export default function QuizletStudioScreen() {
         <Text style={styles.headerTitle}>Quizlet Study Studio</Text>
         <Text style={styles.headerSubtitle}>Import notes or paste raw text to unlock Flashcards, Learn Mode, and Match Game.</Text>
 
-        {/* Note / Document Input */}
         <View style={styles.inputCard}>
           <TextInput
             style={styles.textArea}
@@ -118,7 +181,7 @@ export default function QuizletStudioScreen() {
             <TouchableOpacity style={styles.btnSecondary} onPress={handleDocumentPick}>
               <Text style={styles.btnSecondaryText}>📁 Upload File</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.btnPrimary} onPress={() => handleGenerate(inputText, 'Pasted Deck')}>
+            <TouchableOpacity style={styles.btnPrimary} onPress={() => handleGenerate(inputText)}>
               <Text style={styles.btnPrimaryText}>⚡ Generate Set</Text>
             </TouchableOpacity>
           </View>
@@ -126,7 +189,6 @@ export default function QuizletStudioScreen() {
 
         {loading && <ActivityIndicator size="large" color="#4255FF" style={{ marginVertical: 20 }} />}
 
-        {/* Study Set Toolbar */}
         {cards.length > 0 && !loading && (
           <View>
             <View style={styles.modeTabs}>
@@ -141,7 +203,6 @@ export default function QuizletStudioScreen() {
               </TouchableOpacity>
             </View>
 
-            {/* MODE 1: FLASHCARDS */}
             {activeMode === 'cards' && currentCard && (
               <View style={styles.modeContainer}>
                 <Text style={styles.counterText}>CARD {cardIndex + 1} OF {cards.length}</Text>
@@ -163,7 +224,6 @@ export default function QuizletStudioScreen() {
               </View>
             )}
 
-            {/* MODE 2: LEARN / QUIZ */}
             {activeMode === 'learn' && (
               <View style={styles.modeContainer}>
                 {!quizFinished && currentQuestion ? (
@@ -197,7 +257,6 @@ export default function QuizletStudioScreen() {
               </View>
             )}
 
-            {/* MODE 3: MATCH GAME */}
             {activeMode === 'match' && (
               <View style={styles.modeContainer}>
                 <Text style={styles.counterText}>Match terms to their definitions:</Text>
