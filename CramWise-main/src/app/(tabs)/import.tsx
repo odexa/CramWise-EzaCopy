@@ -1,133 +1,230 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, ActivityIndicator, Alert, Platform, TextInput } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, TextInput, ActivityIndicator, Alert, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
 import * as DocumentPicker from 'expo-document-picker';
-import { generateFromTextContent, GeneratedDeck, GeneratedQuizItem } from '../../utils/fileQuizGenerator';
+import { parseStudySet, StudyCard, QuizQuestion } from '../../utils/quizletGenerator';
 
-export default function QuizletImportScreen() {
+export default function QuizletStudioScreen() {
   const router = useRouter();
+  const [inputText, setInputText] = useState('');
   const [loading, setLoading] = useState(false);
-  const [fileName, setFileName] = useState('');
-  const [pastedText, setPastedText] = useState('');
-  const [activeTab, setActiveTab] = useState<'upload' | 'pasted'>('upload');
-  const [generatedDeck, setGeneratedDeck] = useState<GeneratedDeck | null>(null);
-  const [generatedQuestions, setGeneratedQuestions] = useState<GeneratedQuizItem[]>([]);
+  const [activeMode, setActiveMode] = useState<'cards' | 'learn' | 'match'>('cards');
+
+  // Study Data State
+  const [cards, setCards] = useState<StudyCard[]>([]);
+  const [questions, setQuestions] = useState<QuizQuestion[]>([]);
+
+  // Cards Mode State
   const [cardIndex, setCardIndex] = useState(0);
   const [isFlipped, setIsFlipped] = useState(false);
 
-  const processText = (text: string, name: string) => {
+  // Learn/Quiz Mode State
+  const [quizIndex, setQuizIndex] = useState(0);
+  const [selectedOption, setSelectedOption] = useState<string | null>(null);
+  const [score, setScore] = useState(0);
+  const [quizFinished, setQuizFinished] = useState(false);
+
+  // Match Game State
+  const [matchItems, setMatchItems] = useState<{ id: string; text: string; type: 'term' | 'def'; matchId: string }[]>([]);
+  const [selectedMatch, setSelectedMatch] = useState<string | null>(null);
+  const [matchedIds, setMatchedIds] = useState<string[]>([]);
+
+  const handleGenerate = (rawText: string, name: string) => {
     setLoading(true);
     setTimeout(() => {
-      const { deck, questions } = generateFromTextContent(text, name);
-      setGeneratedDeck(deck);
-      setGeneratedQuestions(questions);
+      const data = parseStudySet(rawText, name);
+      setCards(data.cards);
+      setQuestions(data.questions);
+
+      // Setup Match Game
+      const terms = data.cards.slice(0, 4).map(c => ({ id: `t_${c.id}`, text: c.term, type: 'term' as const, matchId: c.id }));
+      const defs = data.cards.slice(0, 4).map(c => ({ id: `d_${c.id}`, text: c.definition, type: 'def' as const, matchId: c.id }));
+      setMatchItems([...terms, ...defs].sort(() => 0.5 - Math.random()));
+
       setCardIndex(0);
       setIsFlipped(false);
+      setQuizIndex(0);
+      setScore(0);
+      setQuizFinished(false);
+      setMatchedIds([]);
+      setSelectedMatch(null);
       setLoading(false);
-    }, 1200);
+    }, 800);
   };
 
-  const handlePickDocument = async () => {
+  const handleDocumentPick = async () => {
     try {
       const result = await DocumentPicker.getDocumentAsync({ type: ['*/*'], copyToCacheDirectory: true });
-      if (result.canceled || !result.assets || result.assets.length === 0) return;
-      const asset = result.assets[0];
-      setFileName(asset.name);
-      const sampleExtraction = asset.name + ' content: Memory Paging - Divides physical memory into fixed-size blocks. FCFS - First-Come First-Served CPU scheduling algorithm. Virtual Memory - OS capability using hardware and software to map virtual to physical addresses. Semaphore - Variable used to solve critical section problems.';
-      processText(sampleExtraction, asset.name);
-    } catch (err) {
-      if (Platform.OS === 'web') window.alert('Failed to pick file.');
-      else Alert.alert('Error', 'Failed to pick file.');
+      if (result.canceled || !result.assets?.[0]) return;
+      const fileName = result.assets[0].name;
+      const mockExtractedText = `${fileName}:\nMemory Paging - Divides memory into fixed-size blocks.\nVirtual Memory - Expands usable RAM onto storage.\nSemaphore - Controls access to shared resources.\nDeadlock - A state where process execution is stalled.`;
+      handleGenerate(mockExtractedText, fileName);
+    } catch {
+      if (Platform.OS === 'web') window.alert('Failed to pick document.');
+      else Alert.alert('Error', 'Failed to pick document.');
     }
   };
 
-  const handleProcessPastedText = () => {
-    if (!pastedText.trim()) {
-      if (Platform.OS === 'web') window.alert('Please paste study notes first.');
-      else Alert.alert('Empty Text', 'Please paste study notes first.');
+  const handleQuizAnswer = (option: string) => {
+    if (selectedOption) return;
+    setSelectedOption(option);
+    const currentQ = questions[quizIndex];
+    if (option === currentQ.correctAnswer) setScore(s => s + 1);
+
+    setTimeout(() => {
+      setSelectedOption(null);
+      if (quizIndex + 1 < questions.length) {
+        setQuizIndex(i => i + 1);
+      } else {
+        setQuizFinished(true);
+      }
+    }, 1000);
+  };
+
+  const handleMatchSelect = (item: { id: string; matchId: string }) => {
+    if (matchedIds.includes(item.id)) return;
+    if (!selectedMatch) {
+      setSelectedMatch(item.id);
       return;
     }
-    processText(pastedText, 'Pasted Study Set');
+
+    const prevSelected = matchItems.find(m => m.id === selectedMatch);
+    if (prevSelected && prevSelected.id !== item.id && prevSelected.matchId === item.matchId) {
+      setMatchedIds(prev => [...prev, prevSelected.id, item.id]);
+    }
+    setSelectedMatch(null);
   };
 
-  const handleNextCard = () => {
-    if (!generatedDeck) return;
-    setIsFlipped(false);
-    setCardIndex((prev) => (prev + 1) % generatedDeck.cards.length);
-  };
-
-  const handlePrevCard = () => {
-    if (!generatedDeck) return;
-    setIsFlipped(false);
-    setCardIndex((prev) => (prev === 0 ? generatedDeck.cards.length - 1 : prev - 1));
-  };
-
-  const handleStartGeneratedQuiz = () => {
-    if (generatedQuestions.length === 0) return;
-    const score = generatedQuestions.length;
-    const percentage = 100;
-    if (Platform.OS === 'web') window.alert('Quizlet Mode: Perfect score 100%! Saved to Scores & History.');
-    else Alert.alert('Quiz Completed!', 'Score: ' + score + '/' + generatedQuestions.length + ' (100%)');
-    router.push('/(tabs)/scores');
-  };
-
-  const currentCard = generatedDeck?.cards[cardIndex];
+  const currentCard = cards[cardIndex];
+  const currentQuestion = questions[quizIndex];
 
   return (
     <View style={styles.container}>
       <ScrollView contentContainerStyle={styles.scrollContent}>
-        <Text style={styles.headerTitle}>Quizlet AI Studio</Text>
-        <Text style={styles.headerSubtitle}>Convert PDFs, DOCX, PPTs, or pasted study notes into interactive Quizlet sets.</Text>
+        <Text style={styles.headerTitle}>Quizlet Study Studio</Text>
+        <Text style={styles.headerSubtitle}>Import notes or paste raw text to unlock Flashcards, Learn Mode, and Match Game.</Text>
 
-        <View style={styles.tabContainer}>
-          <TouchableOpacity style={[styles.tabBtn, activeTab === 'upload' && styles.tabBtnActive]} onPress={() => setActiveTab('upload')}>
-            <Text style={[styles.tabText, activeTab === 'upload' && styles.tabTextActive]}>📄 Upload Document</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={[styles.tabBtn, activeTab === 'pasted' && styles.tabBtnActive]} onPress={() => setActiveTab('pasted')}>
-            <Text style={[styles.tabText, activeTab === 'pasted' && styles.tabTextActive]}>📝 Paste Raw Notes</Text>
-          </TouchableOpacity>
-        </View>
-
-        {activeTab === 'upload' ? (
-          <TouchableOpacity style={styles.uploadCard} onPress={handlePickDocument} disabled={loading}>
-            {loading ? <ActivityIndicator size="large" color="#4255FF" /> : (
-              <>
-                <Text style={styles.uploadIcon}>☁️</Text>
-                <Text style={styles.uploadText}>{fileName ? 'File: ' + fileName : 'Upload PDF, DOCX, TXT, or PPT'}</Text>
-                <Text style={styles.uploadSubtext}>Quizlet AI will automatically build your Flashcard set.</Text>
-              </>
-            )}
-          </TouchableOpacity>
-        ) : (
-          <View style={styles.pastedContainer}>
-            <TextInput style={styles.pastedInput} placeholder="Paste definitions (e.g. CPU: Central Processing Unit)" placeholderTextColor="#8E8E93" multiline numberOfLines={5} value={pastedText} onChangeText={setPastedText} />
-            <TouchableOpacity style={styles.generateBtn} onPress={handleProcessPastedText} disabled={loading}>
-              {loading ? <ActivityIndicator color="#FFF" /> : <Text style={styles.generateBtnText}>⚡ Generate Quizlet Set</Text>}
+        {/* Note / Document Input */}
+        <View style={styles.inputCard}>
+          <TextInput
+            style={styles.textArea}
+            placeholder="Paste study notes (e.g. CPU: Central Processing Unit)..."
+            placeholderTextColor="#8E8E93"
+            multiline
+            value={inputText}
+            onChangeText={setInputText}
+          />
+          <View style={styles.actionRow}>
+            <TouchableOpacity style={styles.btnSecondary} onPress={handleDocumentPick}>
+              <Text style={styles.btnSecondaryText}>📁 Upload File</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.btnPrimary} onPress={() => handleGenerate(inputText, 'Pasted Deck')}>
+              <Text style={styles.btnPrimaryText}>⚡ Generate Set</Text>
             </TouchableOpacity>
           </View>
-        )}
+        </View>
 
-        {generatedDeck && currentCard && (
-          <View style={styles.flashcardSection}>
-            <View style={styles.cardCounterRow}>
-              <Text style={styles.cardCounterText}>CARD {cardIndex + 1} OF {generatedDeck.cards.length}</Text>
-              <Text style={styles.flipHint}>Tap card to flip</Text>
+        {loading && <ActivityIndicator size="large" color="#4255FF" style={{ marginVertical: 20 }} />}
+
+        {/* Study Set Toolbar */}
+        {cards.length > 0 && !loading && (
+          <View>
+            <View style={styles.modeTabs}>
+              <TouchableOpacity style={[styles.modeTab, activeMode === 'cards' && styles.modeTabActive]} onPress={() => setActiveMode('cards')}>
+                <Text style={[styles.modeTabText, activeMode === 'cards' && styles.modeTabTextActive]}>🎴 Flashcards</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.modeTab, activeMode === 'learn' && styles.modeTabActive]} onPress={() => setActiveMode('learn')}>
+                <Text style={[styles.modeTabText, activeMode === 'learn' && styles.modeTabTextActive]}>📝 Learn / Quiz</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.modeTab, activeMode === 'match' && styles.modeTabActive]} onPress={() => setActiveMode('match')}>
+                <Text style={[styles.modeTabText, activeMode === 'match' && styles.modeTabTextActive]}>🧩 Match</Text>
+              </TouchableOpacity>
             </View>
 
-            <TouchableOpacity style={styles.flipCard} onPress={() => setIsFlipped(!isFlipped)} activeOpacity={0.9}>
-              <Text style={styles.cardBadge}>{isFlipped ? 'DEFINITION' : 'TERM'}</Text>
-              <Text style={styles.cardContentText}>{isFlipped ? currentCard.answer : currentCard.question}</Text>
-            </TouchableOpacity>
+            {/* MODE 1: FLASHCARDS */}
+            {activeMode === 'cards' && currentCard && (
+              <View style={styles.modeContainer}>
+                <Text style={styles.counterText}>CARD {cardIndex + 1} OF {cards.length}</Text>
+                <TouchableOpacity style={styles.flipCard} onPress={() => setIsFlipped(!isFlipped)} activeOpacity={0.9}>
+                  <Text style={styles.cardBadge}>{isFlipped ? 'DEFINITION' : 'TERM'}</Text>
+                  <Text style={styles.cardText}>{isFlipped ? currentCard.definition : currentCard.term}</Text>
+                </TouchableOpacity>
+                <View style={styles.controlsRow}>
+                  <TouchableOpacity style={styles.ctrlBtn} onPress={() => { setIsFlipped(false); setCardIndex(i => (i === 0 ? cards.length - 1 : i - 1)); }}>
+                    <Text style={styles.ctrlBtnText}>◀ Prev</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.ctrlBtn} onPress={() => setIsFlipped(!isFlipped)}>
+                    <Text style={styles.ctrlBtnText}>🔄 Flip</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.ctrlBtn} onPress={() => { setIsFlipped(false); setCardIndex(i => (i + 1) % cards.length); }}>
+                    <Text style={styles.ctrlBtnText}>Next ▶</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
 
-            <View style={styles.cardControls}>
-              <TouchableOpacity style={styles.controlBtn} onPress={handlePrevCard}><Text style={styles.controlBtnText}>◀ Prev</Text></TouchableOpacity>
-              <TouchableOpacity style={styles.controlBtn} onPress={() => setIsFlipped(!isFlipped)}><Text style={styles.controlBtnText}>🔄 Flip</Text></TouchableOpacity>
-              <TouchableOpacity style={styles.controlBtn} onPress={handleNextCard}><Text style={styles.controlBtnText}>Next ▶</Text></TouchableOpacity>
-            </View>
+            {/* MODE 2: LEARN / QUIZ */}
+            {activeMode === 'learn' && (
+              <View style={styles.modeContainer}>
+                {!quizFinished && currentQuestion ? (
+                  <View>
+                    <Text style={styles.counterText}>QUESTION {quizIndex + 1} OF {questions.length}</Text>
+                    <Text style={styles.quizTerm}>{currentQuestion.term}</Text>
+                    {currentQuestion.options.map((option, idx) => {
+                      const isSelected = selectedOption === option;
+                      const isCorrect = option === currentQuestion.correctAnswer;
+                      let btnStyle = styles.optionBtn;
+                      if (selectedOption) {
+                        if (isCorrect) btnStyle = [styles.optionBtn, styles.correctOption];
+                        else if (isSelected) btnStyle = [styles.optionBtn, styles.wrongOption];
+                      }
+                      return (
+                        <TouchableOpacity key={idx} style={btnStyle} onPress={() => handleQuizAnswer(option)} disabled={!!selectedOption}>
+                          <Text style={styles.optionText}>{option}</Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                ) : (
+                  <View style={styles.resultsBox}>
+                    <Text style={styles.resultsTitle}>Quiz Finished!</Text>
+                    <Text style={styles.resultsScore}>Score: {score} / {questions.length} ({Math.round((score / questions.length) * 100)}%)</Text>
+                    <TouchableOpacity style={styles.btnPrimary} onPress={() => { setQuizIndex(0); setScore(0); setQuizFinished(false); }}>
+                      <Text style={styles.btnPrimaryText}>Restart Quiz</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
+              </View>
+            )}
 
-            <TouchableOpacity style={styles.quizletActionBtn} onPress={handleStartGeneratedQuiz}>
-              <Text style={styles.quizletActionText}>🎯 Test Your Knowledge (Quiz Mode)</Text>
-            </TouchableOpacity>
+            {/* MODE 3: MATCH GAME */}
+            {activeMode === 'match' && (
+              <View style={styles.modeContainer}>
+                <Text style={styles.counterText}>Match terms to their definitions:</Text>
+                <View style={styles.matchGrid}>
+                  {matchItems.map(item => {
+                    const isMatched = matchedIds.includes(item.id);
+                    const isSelected = selectedMatch === item.id;
+                    return (
+                      <TouchableOpacity
+                        key={item.id}
+                        style={[
+                          styles.matchTile,
+                          isSelected && styles.matchTileSelected,
+                          isMatched && styles.matchTileMatched,
+                        ]}
+                        onPress={() => handleMatchSelect(item)}
+                        disabled={isMatched}
+                      >
+                        <Text style={[styles.matchTileText, isMatched && styles.matchTextMatched]}>
+                          {isMatched ? '✓' : item.text}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </View>
+            )}
           </View>
         )}
       </ScrollView>
@@ -138,31 +235,40 @@ export default function QuizletImportScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0A092D' },
   scrollContent: { padding: 20, maxWidth: 800, width: '100%', alignSelf: 'center' },
-  headerTitle: { fontSize: 26, fontWeight: '800', color: '#FFFFFF' },
-  headerSubtitle: { fontSize: 14, color: '#939BB4', marginVertical: 8, marginBottom: 20 },
-  tabContainer: { flexDirection: 'row', backgroundColor: '#181A40', borderRadius: 12, padding: 4, marginBottom: 16 },
-  tabBtn: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 8 },
-  tabBtnActive: { backgroundColor: '#4255FF' },
-  tabText: { color: '#939BB4', fontWeight: '700', fontSize: 13 },
-  tabTextActive: { color: '#FFFFFF' },
-  uploadCard: { backgroundColor: '#181A40', borderRadius: 16, padding: 30, alignItems: 'center', borderStyle: 'dashed', borderWidth: 2, borderColor: '#4255FF', marginBottom: 20 },
-  uploadIcon: { fontSize: 36, marginBottom: 8 },
-  uploadText: { fontSize: 15, fontWeight: '700', color: '#FFFFFF' },
-  uploadSubtext: { fontSize: 12, color: '#939BB4', marginTop: 4 },
-  pastedContainer: { marginBottom: 20 },
-  pastedInput: { backgroundColor: '#181A40', borderRadius: 12, borderWidth: 1, borderColor: '#2E3856', color: '#FFFFFF', padding: 14, minHeight: 100, textAlignVertical: 'top' },
-  generateBtn: { backgroundColor: '#4255FF', borderRadius: 10, paddingVertical: 12, alignItems: 'center', marginTop: 10 },
-  generateBtnText: { color: '#FFFFFF', fontWeight: '800', fontSize: 14 },
-  flashcardSection: { marginTop: 10 },
-  cardCounterRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },
-  cardCounterText: { color: '#939BB4', fontWeight: '800', fontSize: 12 },
-  flipHint: { color: '#4255FF', fontWeight: '600', fontSize: 12 },
-  flipCard: { backgroundColor: '#2E3856', borderRadius: 20, minHeight: 200, padding: 24, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#4255FF', marginVertical: 10 },
+  headerTitle: { fontSize: 26, fontWeight: '800', color: '#FFF' },
+  headerSubtitle: { fontSize: 14, color: '#939BB4', marginVertical: 8 },
+  inputCard: { backgroundColor: '#181A40', borderRadius: 16, padding: 16, marginVertical: 12 },
+  textArea: { backgroundColor: '#2E3856', borderRadius: 12, color: '#FFF', padding: 12, minHeight: 80, textAlignVertical: 'top' },
+  actionRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 12 },
+  btnPrimary: { backgroundColor: '#4255FF', borderRadius: 10, paddingVertical: 12, paddingHorizontal: 20, alignItems: 'center' },
+  btnPrimaryText: { color: '#FFF', fontWeight: '800' },
+  btnSecondary: { backgroundColor: '#2E3856', borderRadius: 10, paddingVertical: 12, paddingHorizontal: 16, alignItems: 'center' },
+  btnSecondaryText: { color: '#FFF', fontWeight: '700' },
+  modeTabs: { flexDirection: 'row', backgroundColor: '#181A40', borderRadius: 12, padding: 4, marginVertical: 16 },
+  modeTab: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 8 },
+  modeTabActive: { backgroundColor: '#4255FF' },
+  modeTabText: { color: '#939BB4', fontWeight: '700', fontSize: 13 },
+  modeTabTextActive: { color: '#FFF' },
+  modeContainer: { marginTop: 8 },
+  counterText: { color: '#939BB4', fontWeight: '800', fontSize: 12, marginBottom: 8 },
+  flipCard: { backgroundColor: '#2E3856', borderRadius: 20, minHeight: 220, padding: 24, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#4255FF' },
   cardBadge: { position: 'absolute', top: 16, left: 16, color: '#FFCD1F', fontWeight: '800', fontSize: 11 },
-  cardContentText: { color: '#FFFFFF', fontSize: 20, fontWeight: '700', textAlign: 'center', paddingHorizontal: 10 },
-  cardControls: { flexDirection: 'row', justifyContent: 'space-between', marginVertical: 14 },
-  controlBtn: { backgroundColor: '#181A40', paddingVertical: 10, paddingHorizontal: 18, borderRadius: 10, borderWidth: 1, borderColor: '#2E3856' },
-  controlBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 13 },
-  quizletActionBtn: { backgroundColor: '#FFCD1F', borderRadius: 12, paddingVertical: 16, alignItems: 'center', marginTop: 10 },
-  quizletActionText: { color: '#0A092D', fontWeight: '800', fontSize: 15 },
+  cardText: { color: '#FFF', fontSize: 20, fontWeight: '700', textAlign: 'center' },
+  controlsRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 16 },
+  ctrlBtn: { backgroundColor: '#181A40', paddingVertical: 12, paddingHorizontal: 20, borderRadius: 10, borderWidth: 1, borderColor: '#2E3856' },
+  ctrlBtnText: { color: '#FFF', fontWeight: '700' },
+  quizTerm: { fontSize: 22, fontWeight: '800', color: '#FFF', marginBottom: 16 },
+  optionBtn: { backgroundColor: '#2E3856', padding: 16, borderRadius: 12, marginBottom: 10 },
+  optionText: { color: '#FFF', fontWeight: '600' },
+  correctOption: { backgroundColor: '#2D6A4F' },
+  wrongOption: { backgroundColor: '#991B1B' },
+  resultsBox: { alignItems: 'center', padding: 20, backgroundColor: '#181A40', borderRadius: 16 },
+  resultsTitle: { fontSize: 24, fontWeight: '800', color: '#FFF' },
+  resultsScore: { fontSize: 18, color: '#5BC0BE', marginVertical: 12 },
+  matchGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' },
+  matchTile: { backgroundColor: '#2E3856', width: '48%', height: 100, borderRadius: 12, padding: 12, justifyContent: 'center', alignItems: 'center', marginBottom: 12, borderWidth: 1, borderColor: '#3A506B' },
+  matchTileSelected: { borderColor: '#FFCD1F', borderWidth: 2 },
+  matchTileMatched: { backgroundColor: '#181A40', borderColor: '#2D6A4F', opacity: 0.5 },
+  matchTileText: { color: '#FFF', fontWeight: '700', textAlign: 'center', fontSize: 13 },
+  matchTextMatched: { color: '#2D6A4F' },
 });
